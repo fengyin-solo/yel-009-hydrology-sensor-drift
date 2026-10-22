@@ -8,11 +8,14 @@
 
 水情站码取 2–48 个字符；空白开头或结尾、以及控制字符都不合法。`control_elevation_m` 是有限数。
 
-`coefficient` 必须大于零且有限。
-
-`exponent` 也必须大于零且有限，并落在 1 到 3。
-
 布尔值不属于数字。
+
+`rating` 恰好包含 `checks`。流量检查有 4 到 10 项，每项恰好包含
+`logger_s`、`raw_m`、`discharge_m3_s` 三个有限数，且实测流量大于零。
+这些检查来自同一套水位—流量关系：除至多一条记录可能失准外，其余记录都满足下面的幂律。
+换算到参考时间后，每项检查必须落在首末锚点之间，且校正水位高于控制高程。
+反算出的 `coefficient` 必须大于零且有限，`exponent` 必须有限并落在 1 到 3；
+在所有合法参数中，只有支持记录最多的那一组可以胜出。
 
 `clock_checks` 有 4 至 8 条对时记录，每项恰好有 `logger_s` 与 `reference_s` 两个有限数。最多一条对时记录可能失准；其余记录都满足 `reference_s = clock_gain * logger_s + clock_offset_s`，其中 `clock_gain` 位于 `0.99` 到 `1.01`。仿射参数中只有支持记录最多的那一组可以胜出。
 
@@ -38,11 +41,17 @@ python3 /app/hydrology_sensor_drift.py <现场数据> <回算结果>
 
 每个锚点处传感器偏移量是 `true_stage_m - raw_m`。读数时刻位于两个锚点之间时，偏移量按时间做线性插值；正好落在锚点时取该点原值。校正水位是原始读数加插值偏移。
 
-真实水位不大于控制高程时，流量记为 0。否则流量为：
+先只用授时检查恢复 `clock_gain` 与 `clock_offset_s`。随后用同一时钟换算流量检查的时间，
+按锚点校正每条检查的原始水位。记水位高于控制高程的差为 `depth`，流量检查支持：
 
 ```text
-Q = coefficient * (stage - control_elevation_m)^exponent
+Q = coefficient * depth^exponent
 ```
+
+参考解必须从这些检查中反算唯一的 `coefficient` 与 `exponent`，允许一条失准记录；
+不能把参数当已知量，也不能只拟合其中两条刚好吻合的记录。
+
+真实水位不大于控制高程时，读数流量记为 0。否则用量检查反算出的参数计算流量。
 
 逐时总水量由相邻两个读数之间的流量按梯形法积分：`(Q_i+Q_{i+1})/2 * (t_{i+1}-t_i)`，所有区间求和，单位为立方米。输出中的峰值取全部逐时流量的最大值。
 
@@ -50,7 +59,9 @@ Q = coefficient * (stage - control_elevation_m)^exponent
 
 先用时钟检查恢复 `clock_gain` 与 `clock_offset_s`，把锚点和读数都换算成参考时间。偏移量插值、逐时流量和积分都在参考时间上计算。回算单以一行 UTF-8 紧凑 JSON 落盘，并在最后写入 LF 字节。
 
-顶层键依次为 `station_id`、`status`、`clock_gain`、`clock_offset_s`、`readings`、`total_volume_m3`、`peak_discharge_m3_s`。`status` 写 `complete`。`readings` 保持输入时间顺序，每项只放下面三个键：
+顶层键依次为 `station_id`、`status`、`clock_gain`、`clock_offset_s`、
+`coefficient`、`exponent`、`readings`、`total_volume_m3`、`peak_discharge_m3_s`。
+`status` 写 `complete`。`readings` 保持输入时间顺序，每项只放下面三个键：
 
 ```text
 time_s

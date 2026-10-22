@@ -13,7 +13,8 @@ from pathlib import Path
 
 
 TOP = {"station_id", "control_elevation_m", "rating", "clock_checks", "anchors", "readings"}
-RATING = {"coefficient", "exponent"}
+RATING = {"checks"}
+RATING_CHECK = {"logger_s", "raw_m", "discharge_m3_s"}
 CLOCK_CHECK = {"logger_s", "reference_s"}
 ANCHOR = {"time_s", "raw_m", "true_stage_m"}
 READING = {"time_s", "raw_m"}
@@ -59,12 +60,24 @@ def validate(payload):
     rating = payload["rating"]
     if not isinstance(rating, dict) or set(rating) != RATING:
         raise Refusal("BAD_INPUT")
-    coefficient = rating["coefficient"]
-    exponent = rating["exponent"]
-    if not finite(coefficient) or coefficient <= 0:
+    rating_checks = rating["checks"]
+    if not isinstance(rating_checks, list) or not 4 <= len(rating_checks) <= 10:
         raise Refusal("BAD_INPUT")
-    if not finite(exponent) or not 1 <= exponent <= 3:
-        raise Refusal("BAD_INPUT")
+    clean_rating_checks = []
+    for item in rating_checks:
+        if not isinstance(item, dict) or set(item) != RATING_CHECK:
+            raise Refusal("BAD_INPUT")
+        if any(not finite(item[key]) for key in RATING_CHECK):
+            raise Refusal("BAD_INPUT")
+        if item["discharge_m3_s"] <= 0:
+            raise Refusal("BAD_INPUT")
+        clean_rating_checks.append(
+            (
+                float(item["logger_s"]),
+                float(item["raw_m"]),
+                float(item["discharge_m3_s"]),
+            )
+        )
     clock_checks = payload["clock_checks"]
     if not isinstance(clock_checks, list) or not 4 <= len(clock_checks) <= 8:
         raise Refusal("BAD_INPUT")
@@ -108,8 +121,7 @@ def validate(payload):
     return (
         station_id,
         float(control),
-        float(coefficient),
-        float(exponent),
+        clean_rating_checks,
         clean_clock,
         clean_anchors,
         clean_readings,
@@ -152,12 +164,63 @@ def correction_at(anchors, when):
     raise Refusal("BAD_INPUT")
 
 
-def reconstruct(station_id, control, coefficient, exponent, clock_checks, anchors, readings):
+def recover_rating(rating_checks, control, anchors, gain, offset):
+    observations = []
+    for logger, raw, observed in rating_checks:
+        when = gain * logger + offset
+        if when < anchors[0][0] or when > anchors[-1][0]:
+            raise Refusal("BAD_INPUT")
+        depth = raw + correction_at(anchors, when) - control
+        if depth <= 0:
+            raise Refusal("BAD_INPUT")
+        observations.append((depth, observed))
+
+    supported = {}
+    for (depth_a, flow_a), (depth_b, flow_b) in combinations(observations, 2):
+        if depth_a == depth_b or flow_a == flow_b:
+            continue
+        try:
+            exponent = math.log(flow_b / flow_a) / math.log(depth_b / depth_a)
+            coefficient = flow_a / depth_a**exponent
+        except (ValueError, ZeroDivisionError, OverflowError):
+            continue
+        if not finite(coefficient) or coefficient <= 0:
+            continue
+        if not finite(exponent) or not 1 <= exponent <= 3:
+            continue
+        score = sum(
+            math.isclose(
+                coefficient * depth**exponent,
+                observed,
+                rel_tol=1e-9,
+                abs_tol=1e-12,
+            )
+            for depth, observed in observations
+        )
+        key = (round(coefficient, 12), round(exponent, 12))
+        supported[key] = max(score, supported.get(key, -1))
+    if not supported:
+        raise Refusal("BAD_INPUT")
+    best = max(supported.values())
+    winners = [params for params, score in supported.items() if score == best]
+    if best < len(observations) - 1 or len(winners) != 1:
+        raise Refusal("BAD_INPUT")
+    return winners[0]
+
+
+def reconstruct(station_id, control, rating_checks, clock_checks, anchors, readings):
     gain, offset = recover_clock(clock_checks)
     anchors = [
         (gain * when + offset, raw, stage)
         for when, raw, stage in anchors
     ]
+    coefficient, exponent = recover_rating(
+        rating_checks,
+        control,
+        anchors,
+        gain,
+        offset,
+    )
     readings = [
         (gain * when + offset, raw)
         for when, raw in readings
@@ -180,6 +243,8 @@ def reconstruct(station_id, control, coefficient, exponent, clock_checks, anchor
         "status": "complete",
         "clock_gain": gain,
         "clock_offset_s": offset,
+        "coefficient": coefficient,
+        "exponent": exponent,
         "readings": rows,
         "total_volume_m3": volume,
         "peak_discharge_m3_s": max(item["discharge_m3_s"] for item in rows),

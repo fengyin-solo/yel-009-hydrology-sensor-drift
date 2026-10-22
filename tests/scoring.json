@@ -1,7 +1,7 @@
 {
   "gate_tests": [
     "test_outputs.py::test_stage_offset_is_linearly_interpolated",
-    "test_outputs.py::test_rating_curve_uses_correct_exponent",
+    "test_outputs.py::test_rating_parameters_are_recovered_from_discharge_checks",
     "test_outputs.py::test_volume_uses_trapezoid_integration",
     "test_outputs.py::test_top_level_keys_are_exact",
     "test_outputs.py::test_rating_keys_are_exact",
@@ -67,7 +67,7 @@
     "test_outputs.py::test_peak_is_maximum_corrected_discharge": {
       "priority": "core",
       "rationale": "peak is maximum corrected discharge；这是任务的主交付路径，失败意味着核心业务结果不可用。",
-      "weight": 0.15
+      "weight": 0.137
     },
     "test_outputs.py::test_reading_has_exact_keys": {
       "priority": "schema",
@@ -87,7 +87,7 @@
     "test_outputs.py::test_result_has_fixed_compact_shape": {
       "priority": "core",
       "rationale": "result has fixed compact shape；这是任务的主交付路径，失败意味着核心业务结果不可用。",
-      "weight": 0.15
+      "weight": 0.137
     },
     "test_outputs.py::test_station_identifier_is_strict[ leading]": {
       "priority": "supporting",
@@ -114,15 +114,60 @@
       "rationale": "station identifier is strict；这补充验证外围业务约束，失败会降低交付完整性和可运维性。",
       "weight": 0.013
     },
+    "test_outputs.py::test_station_identifier_length_endpoints_are_accepted[A1]": {
+      "priority": "boundary",
+      "rationale": "验证公开最小站码长度 2 是合法输入，避免边界只测拒收。",
+      "weight": 0.013
+    },
+    "test_outputs.py::test_station_identifier_length_endpoints_are_accepted[AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA]": {
+      "priority": "boundary",
+      "rationale": "验证公开最大站码长度 48 是合法输入，避免边界只测拒收。",
+      "weight": 0.013
+    },
     "test_outputs.py::test_success_is_quiet": {
       "priority": "core",
       "rationale": "success is quiet；这是任务的主交付路径，失败意味着核心业务结果不可用。",
-      "weight": 0.15
+      "weight": 0.068
     },
     "test_outputs.py::test_success_leaves_no_temporary_file": {
       "priority": "recovery",
       "rationale": "success leaves no temporary file；这验证失败、重跑或恢复不变量，失败会造成旧数据和台账不一致。",
       "weight": 0.033
+    },
+    "test_outputs.py::test_rating_check_shape_is_strict": {
+      "priority": "schema",
+      "rationale": "验证流量检查数量、精确键集合和数值类型，保证反演输入可消费。",
+      "weight": 0.007
+    },
+    "test_outputs.py::test_rating_checks_must_stay_inside_the_anchor_window": {
+      "priority": "boundary",
+      "rationale": "验证流量检查换算后必须落在锚点覆盖区间，避免外推率定曲线。",
+      "weight": 0.007
+    },
+    "test_outputs.py::test_rating_checks_require_positive_corrected_depth": {
+      "priority": "boundary",
+      "rationale": "验证流量检查校正后必须高于控制高程，排除零深度和负深度幂运算。",
+      "weight": 0.007
+    },
+    "test_outputs.py::test_rating_checks_need_a_unique_consensus_curve": {
+      "priority": "core",
+      "rationale": "验证一曲线无法获得多数支持时整轮拒收，不能凭两条检查硬拟合参数。",
+      "weight": 0.04
+    },
+    "test_outputs.py::test_rating_exponent_endpoints_are_accepted[1.0]": {
+      "priority": "boundary",
+      "rationale": "验证反算指数下限 1 是合法率定曲线，避免合法端点被误判为坏输入并阻断业务计算。",
+      "weight": 0.007
+    },
+    "test_outputs.py::test_rating_exponent_endpoints_are_accepted[3.0]": {
+      "priority": "boundary",
+      "rationale": "验证反算指数上限 3 是合法率定曲线，避免公开上端点被静默拒收后产生错误放行。",
+      "weight": 0.007
+    },
+    "test_outputs.py::test_clock_gain_lower_endpoint_is_accepted": {
+      "priority": "boundary",
+      "rationale": "验证时钟漂移下限 0.99 的合法记录可恢复，避免边界只覆盖拒收。",
+      "weight": 0.007
     }
   },
   "weight_policy": {
