@@ -1,0 +1,133 @@
+{
+  "gate_tests": [
+    "test_outputs.py::test_stage_offset_is_linearly_interpolated",
+    "test_outputs.py::test_rating_curve_uses_correct_exponent",
+    "test_outputs.py::test_volume_uses_trapezoid_integration",
+    "test_outputs.py::test_top_level_keys_are_exact",
+    "test_outputs.py::test_rating_keys_are_exact",
+    "test_outputs.py::test_duplicate_json_key_is_refused"
+  ],
+  "schema_version": 1,
+  "tests": {
+    "test_outputs.py::test_absent_parent_is_io_failure": {
+      "priority": "recovery",
+      "rationale": "absent parent is io failure；这验证失败、重跑或恢复不变量，失败会造成旧数据和台账不一致。",
+      "weight": 0.033
+    },
+    "test_outputs.py::test_anchor_has_exact_keys": {
+      "priority": "schema",
+      "rationale": "anchor has exact keys；这验证结构、类型或序列化外观，失败会使下游无法稳定消费结果。",
+      "weight": 0.019
+    },
+    "test_outputs.py::test_anchor_times_must_be_strictly_increasing": {
+      "priority": "supporting",
+      "rationale": "anchor times must be strictly increasing；这补充验证外围业务约束，失败会降低交付完整性和可运维性。",
+      "weight": 0.014
+    },
+    "test_outputs.py::test_bad_input_preserves_existing_result": {
+      "priority": "recovery",
+      "rationale": "bad input preserves existing result；这验证失败、重跑或恢复不变量，失败会造成旧数据和台账不一致。",
+      "weight": 0.033
+    },
+    "test_outputs.py::test_boolean_reading_is_refused": {
+      "priority": "boundary",
+      "rationale": "boolean reading is refused；这验证公开边界和拒收口径，失败会产生越界输入或错误放行。",
+      "weight": 0.024
+    },
+    "test_outputs.py::test_clock_check_shape_is_strict": {
+      "priority": "schema",
+      "rationale": "clock check shape is strict；这验证结构、类型或序列化外观，失败会使下游无法稳定消费结果。",
+      "weight": 0.019
+    },
+    "test_outputs.py::test_clock_checks_must_determine_one_affine_map": {
+      "priority": "supporting",
+      "rationale": "clock checks must determine one affine map；这补充验证外围业务约束，失败会降低交付完整性和可运维性。",
+      "weight": 0.014
+    },
+    "test_outputs.py::test_clock_mapping_is_recovered_and_one_bad_check_ignored": {
+      "priority": "core",
+      "rationale": "clock mapping is recovered and one bad check ignored；这是任务的主交付路径，失败意味着核心业务结果不可用。",
+      "weight": 0.15
+    },
+    "test_outputs.py::test_exponent_range_is_enforced": {
+      "priority": "boundary",
+      "rationale": "exponent range is enforced；这验证公开边界和拒收口径，失败会产生越界输入或错误放行。",
+      "weight": 0.024
+    },
+    "test_outputs.py::test_nonpositive_coefficient_is_refused": {
+      "priority": "boundary",
+      "rationale": "nonpositive coefficient is refused；这验证公开边界和拒收口径，失败会产生越界输入或错误放行。",
+      "weight": 0.024
+    },
+    "test_outputs.py::test_output_reading_has_exact_keys": {
+      "priority": "schema",
+      "rationale": "output reading has exact keys；这验证结构、类型或序列化外观，失败会使下游无法稳定消费结果。",
+      "weight": 0.019
+    },
+    "test_outputs.py::test_peak_is_maximum_corrected_discharge": {
+      "priority": "core",
+      "rationale": "peak is maximum corrected discharge；这是任务的主交付路径，失败意味着核心业务结果不可用。",
+      "weight": 0.15
+    },
+    "test_outputs.py::test_reading_has_exact_keys": {
+      "priority": "schema",
+      "rationale": "reading has exact keys；这验证结构、类型或序列化外观，失败会使下游无法稳定消费结果。",
+      "weight": 0.019
+    },
+    "test_outputs.py::test_readings_outside_anchor_span_are_refused": {
+      "priority": "boundary",
+      "rationale": "readings outside anchor span are refused；这验证公开边界和拒收口径，失败会产生越界输入或错误放行。",
+      "weight": 0.024
+    },
+    "test_outputs.py::test_repeat_run_is_byte_identical": {
+      "priority": "recovery",
+      "rationale": "repeat run is byte identical；这验证失败、重跑或恢复不变量，失败会造成旧数据和台账不一致。",
+      "weight": 0.033
+    },
+    "test_outputs.py::test_result_has_fixed_compact_shape": {
+      "priority": "core",
+      "rationale": "result has fixed compact shape；这是任务的主交付路径，失败意味着核心业务结果不可用。",
+      "weight": 0.15
+    },
+    "test_outputs.py::test_station_identifier_is_strict[ leading]": {
+      "priority": "supporting",
+      "rationale": "station identifier is strict；这补充验证外围业务约束，失败会降低交付完整性和可运维性。",
+      "weight": 0.014
+    },
+    "test_outputs.py::test_station_identifier_is_strict[AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA]": {
+      "priority": "supporting",
+      "rationale": "station identifier is strict；这补充验证外围业务约束，失败会降低交付完整性和可运维性。",
+      "weight": 0.014
+    },
+    "test_outputs.py::test_station_identifier_is_strict[A\\nB]": {
+      "priority": "supporting",
+      "rationale": "station identifier is strict；这补充验证外围业务约束，失败会降低交付完整性和可运维性。",
+      "weight": 0.014
+    },
+    "test_outputs.py::test_station_identifier_is_strict[A]": {
+      "priority": "supporting",
+      "rationale": "station identifier is strict；这补充验证外围业务约束，失败会降低交付完整性和可运维性。",
+      "weight": 0.013
+    },
+    "test_outputs.py::test_station_identifier_is_strict[trailing ]": {
+      "priority": "supporting",
+      "rationale": "station identifier is strict；这补充验证外围业务约束，失败会降低交付完整性和可运维性。",
+      "weight": 0.013
+    },
+    "test_outputs.py::test_success_is_quiet": {
+      "priority": "core",
+      "rationale": "success is quiet；这是任务的主交付路径，失败意味着核心业务结果不可用。",
+      "weight": 0.15
+    },
+    "test_outputs.py::test_success_leaves_no_temporary_file": {
+      "priority": "recovery",
+      "rationale": "success leaves no temporary file；这验证失败、重跑或恢复不变量，失败会造成旧数据和台账不一致。",
+      "weight": 0.033
+    }
+  },
+  "weight_policy": {
+    "basis": "business_priority",
+    "core_min_share": 0.5,
+    "version": 1
+  }
+}

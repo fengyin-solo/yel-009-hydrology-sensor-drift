@@ -1,0 +1,27 @@
+schema_version = "1.3"
+
+[task]
+name = "local/hydrology-sensor-drift"
+authors = [{ name = "fengyin" }]
+description = "Correct drifting stage readings with calibration anchors and reconstruct discharge using a rating curve."
+keywords = ["hydrology", "sensor-calibration", "rating-curve", "integration"]
+
+[agent]
+timeout_sec = 3600
+
+[environment]
+build_timeout_sec = 600
+cpus = 2
+memory_mb = 2048
+storage_mb = 4096
+gpus = 0
+allow_internet = true
+
+[verifier]
+timeout_sec = 600
+
+[metadata]
+difficulty = "hard"
+category = "earth-science"
+tags = ["hydrology", "calibration", "rating-curve", "trapezoid"]
+expert_time_estimate = "65m"
