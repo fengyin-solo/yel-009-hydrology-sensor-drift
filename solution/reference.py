@@ -8,16 +8,17 @@ import math
 import os
 import sys
 import tempfile
-from itertools import combinations
+from itertools import combinations, permutations
 from pathlib import Path
 
 
 TOP = {"station_id", "control_elevation_m", "rating", "clock_checks", "anchors", "readings"}
-RATING = {"checks"}
-RATING_CHECK = {"logger_s", "raw_m", "discharge_m3_s"}
+RATING = {"checks", "check_logger_times_s", "exponent"}
+RATING_CHECK = {"raw_m", "discharge_m3_s"}
 CLOCK_CHECK = {"logger_s", "reference_s"}
 ANCHOR = {"time_s", "raw_m", "true_stage_m"}
 READING = {"time_s", "raw_m"}
+MAX_RATING_ERRORS = 4
 
 
 class Refusal(Exception):
@@ -61,7 +62,18 @@ def validate(payload):
     if not isinstance(rating, dict) or set(rating) != RATING:
         raise Refusal("BAD_INPUT")
     rating_checks = rating["checks"]
-    if not isinstance(rating_checks, list) or not 4 <= len(rating_checks) <= 10:
+    check_times = rating["check_logger_times_s"]
+    exponent = rating["exponent"]
+    if not finite(exponent) or not 1 <= exponent <= 3:
+        raise Refusal("BAD_INPUT")
+    if not isinstance(rating_checks, list) or len(rating_checks) != 10:
+        raise Refusal("BAD_INPUT")
+    if (
+        not isinstance(check_times, list)
+        or len(check_times) != len(rating_checks)
+        or any(not finite(value) for value in check_times)
+        or len(set(check_times)) != len(check_times)
+    ):
         raise Refusal("BAD_INPUT")
     clean_rating_checks = []
     for item in rating_checks:
@@ -73,7 +85,6 @@ def validate(payload):
             raise Refusal("BAD_INPUT")
         clean_rating_checks.append(
             (
-                float(item["logger_s"]),
                 float(item["raw_m"]),
                 float(item["discharge_m3_s"]),
             )
@@ -122,6 +133,8 @@ def validate(payload):
         station_id,
         float(control),
         clean_rating_checks,
+        tuple(float(value) for value in check_times),
+        float(exponent),
         clean_clock,
         clean_anchors,
         clean_readings,
@@ -164,58 +177,150 @@ def correction_at(anchors, when):
     raise Refusal("BAD_INPUT")
 
 
-def recover_rating(rating_checks, control, anchors, gain, offset):
-    observations = []
-    for logger, raw, observed in rating_checks:
-        when = gain * logger + offset
-        if when < anchors[0][0] or when > anchors[-1][0]:
-            raise Refusal("BAD_INPUT")
-        depth = raw + correction_at(anchors, when) - control
-        if depth <= 0:
-            raise Refusal("BAD_INPUT")
-        observations.append((depth, observed))
+def maximum_matching(edges):
+    chosen = {}
 
-    supported = {}
-    for (depth_a, flow_a), (depth_b, flow_b) in combinations(observations, 2):
-        if depth_a == depth_b or flow_a == flow_b:
-            continue
-        try:
-            exponent = math.log(flow_b / flow_a) / math.log(depth_b / depth_a)
-            coefficient = flow_a / depth_a**exponent
-        except (ValueError, ZeroDivisionError, OverflowError):
-            continue
-        if not finite(coefficient) or coefficient <= 0:
-            continue
-        if not finite(exponent) or not 1 <= exponent <= 3:
-            continue
-        score = sum(
-            math.isclose(
-                coefficient * depth**exponent,
-                observed,
-                rel_tol=1e-9,
-                abs_tol=1e-12,
+    def augment(check, seen):
+        for time_index in edges[check]:
+            if time_index in seen:
+                continue
+            seen.add(time_index)
+            if time_index not in chosen or augment(chosen[time_index], seen):
+                chosen[time_index] = check
+                return chosen.get(time_index) == check
+        return False
+
+    for check in sorted(range(len(edges)), key=lambda index: len(edges[index])):
+        augment(check, set())
+    return {check: time_index for time_index, check in chosen.items()}
+
+
+def recover_rating(rating_checks, check_times, exponent, control, anchors, gain, offset):
+    reference_times = tuple(gain * value + offset for value in check_times)
+    if any(when < anchors[0][0] or when > anchors[-1][0] for when in reference_times):
+        raise Refusal("BAD_INPUT")
+    corrections = tuple(correction_at(anchors, when) for when in reference_times)
+    support_groups = {}
+    best_support = -1
+    total_checks = len(rating_checks)
+
+    def edges_for(coefficient, curvature, attenuation):
+        edges = []
+        for raw, observed in rating_checks:
+            row = []
+            for time_index, correction in enumerate(corrections):
+                depth = raw + correction - control
+                shape = 1.0 + curvature * depth + attenuation * depth * depth
+                if depth > 0 and shape > 0 and math.isclose(
+                    coefficient * depth**exponent * shape,
+                    observed,
+                    rel_tol=1e-9,
+                    abs_tol=1e-12,
+                ):
+                    row.append(time_index)
+            edges.append(tuple(row))
+        return tuple(edges)
+
+    for check_indices in combinations(range(total_checks), 3):
+        (first, second, third) = check_indices
+        raw_first, flow_first = rating_checks[first]
+        raw_second, flow_second = rating_checks[second]
+        raw_third, flow_third = rating_checks[third]
+        for first_time, second_time, third_time in permutations(range(len(reference_times)), 3):
+            depth_first = raw_first + corrections[first_time] - control
+            depth_second = raw_second + corrections[second_time] - control
+            depth_third = raw_third + corrections[third_time] - control
+            if min(depth_first, depth_second, depth_third) <= 0:
+                continue
+            ratio_second = flow_second / flow_first
+            ratio_third = flow_third / flow_first
+            base_second = (depth_second / depth_first) ** exponent
+            base_third = (depth_third / depth_first) ** exponent
+            matrix = (
+                (
+                    ratio_second * depth_first - base_second * depth_second,
+                    ratio_second * depth_first * depth_first
+                    - base_second * depth_second * depth_second,
+                    base_second - ratio_second,
+                ),
+                (
+                    ratio_third * depth_first - base_third * depth_third,
+                    ratio_third * depth_first * depth_first
+                    - base_third * depth_third * depth_third,
+                    base_third - ratio_third,
+                ),
             )
-            for depth, observed in observations
-        )
-        key = (round(coefficient, 12), round(exponent, 12))
-        supported[key] = max(score, supported.get(key, -1))
-    if not supported:
+            determinant = matrix[0][0] * matrix[1][1] - matrix[0][1] * matrix[1][0]
+            scale = max(1.0, abs(matrix[0][0] * matrix[1][1]), abs(matrix[0][1] * matrix[1][0]))
+            if not math.isfinite(determinant) or abs(determinant) <= 1e-12 * scale:
+                continue
+            curvature = (
+                matrix[0][2] * matrix[1][1] - matrix[1][2] * matrix[0][1]
+            ) / determinant
+            attenuation = (
+                matrix[0][0] * matrix[1][2] - matrix[1][0] * matrix[0][2]
+            ) / determinant
+            if (
+                not finite(curvature)
+                or not finite(attenuation)
+                or abs(curvature) > 5
+                or abs(attenuation) > 5
+            ):
+                continue
+            base_first = 1.0 + curvature * depth_first + attenuation * depth_first * depth_first
+            if base_first <= 0:
+                continue
+            coefficient = flow_first / (depth_first**exponent * base_first)
+            if not finite(coefficient) or coefficient <= 0:
+                continue
+            edges = edges_for(coefficient, curvature, attenuation)
+            if sum(len(row) for row in edges) < total_checks - MAX_RATING_ERRORS:
+                continue
+            matching = maximum_matching(edges)
+            support = len(matching)
+            if support > best_support:
+                best_support = support
+                support_groups = {}
+            if support == best_support:
+                support_groups.setdefault(edges, []).append(
+                    (coefficient, curvature, attenuation)
+                )
+
+    if best_support < total_checks - MAX_RATING_ERRORS or len(support_groups) != 1:
         raise Refusal("BAD_INPUT")
-    best = max(supported.values())
-    winners = [params for params, score in supported.items() if score == best]
-    if best < len(observations) - 1 or len(winners) != 1:
+    candidates = next(iter(support_groups.values()))
+    coefficient = math.fsum(item[0] for item in candidates) / len(candidates)
+    curvature = math.fsum(item[1] for item in candidates) / len(candidates)
+    attenuation = math.fsum(item[2] for item in candidates) / len(candidates)
+    edges = edges_for(coefficient, curvature, attenuation)
+    matching = maximum_matching(edges)
+    if len(matching) < total_checks - MAX_RATING_ERRORS:
         raise Refusal("BAD_INPUT")
-    return winners[0]
+    assigned = [None] * total_checks
+    for check, time_index in matching.items():
+        assigned[check] = float(check_times[time_index])
+    return coefficient, curvature, attenuation, assigned
 
 
-def reconstruct(station_id, control, rating_checks, clock_checks, anchors, readings):
+def reconstruct(
+    station_id,
+    control,
+    rating_checks,
+    check_times,
+    exponent,
+    clock_checks,
+    anchors,
+    readings,
+):
     gain, offset = recover_clock(clock_checks)
     anchors = [
         (gain * when + offset, raw, stage)
         for when, raw, stage in anchors
     ]
-    coefficient, exponent = recover_rating(
+    coefficient, curvature, attenuation, assigned_times = recover_rating(
         rating_checks,
+        check_times,
+        exponent,
         control,
         anchors,
         gain,
@@ -230,7 +335,9 @@ def reconstruct(station_id, control, rating_checks, clock_checks, anchors, readi
     rows = []
     for when, raw in readings:
         stage = raw + correction_at(anchors, when)
-        discharge = coefficient * max(0.0, stage - control) ** exponent
+        depth = max(0.0, stage - control)
+        shape = 1.0 + curvature * depth + attenuation * depth * depth
+        discharge = coefficient * depth**exponent * max(0.0, shape)
         rows.append({"time_s": when, "stage_m": stage, "discharge_m3_s": discharge})
     volume = sum(
         (left["discharge_m3_s"] + right["discharge_m3_s"])
@@ -245,6 +352,9 @@ def reconstruct(station_id, control, rating_checks, clock_checks, anchors, readi
         "clock_offset_s": offset,
         "coefficient": coefficient,
         "exponent": exponent,
+        "curvature_per_m": curvature,
+        "attenuation_per_m2": attenuation,
+        "check_times_s": assigned_times,
         "readings": rows,
         "total_volume_m3": volume,
         "peak_discharge_m3_s": max(item["discharge_m3_s"] for item in rows),

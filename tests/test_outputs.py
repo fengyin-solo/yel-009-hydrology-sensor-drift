@@ -49,26 +49,32 @@ def invoke_candidate(*arguments, timeout=30):
     )
 
 
-def rating_checks(coefficient=2.0, exponent=1.5):
+def rating_data(coefficient=2.0, exponent=1.5):
     gain, offset = 1.01, -5.0
-    anchors = ((-5.0, 1.0, 1.1), (96.0, 1.5, 1.7))
-    points = ((10.0, 1.05), (30.0, 1.18), (55.0, 1.30), (80.0, 1.42), (95.0, 1.54))
+    times = [5.0, 14.0, 23.0, 32.0, 41.0, 50.0, 59.0, 68.0, 77.0, 86.0]
+    permutation = [5, 1, 9, 0, 3, 8, 2, 6, 4, 7]
+    depth_order = [7, 0, 5, 2, 9, 4, 1, 8, 3, 6]
     checks = []
-    for logger, raw in points:
+    for index, logger in enumerate(times):
         when = gain * logger + offset
-        fraction = (when - anchors[0][0]) / (anchors[1][0] - anchors[0][0])
-        left_offset = anchors[0][2] - anchors[0][1]
-        right_offset = anchors[1][2] - anchors[1][1]
-        stage = raw + left_offset + fraction * (right_offset - left_offset)
+        fraction = (when + 5.0) / 101.0
+        correction = 0.1 + fraction * 0.1
+        depth = 0.24 + depth_order[index] * 0.11
+        raw = 1.0 + depth - correction
+        shape = 1.0 + 0.8 * depth - 0.25 * depth * depth
         checks.append(
             {
-                "logger_s": logger,
                 "raw_m": raw,
-                "discharge_m3_s": coefficient * (stage - 1.0) ** exponent,
+                "discharge_m3_s": coefficient * depth**exponent * shape,
             }
         )
+    checks = [checks[index] for index in permutation]
     checks[-1]["discharge_m3_s"] = 999.0
-    return checks
+    return {
+        "checks": checks,
+        "check_logger_times_s": times,
+        "exponent": exponent,
+    }
 
 
 def remap_clock(payload, gain, offset):
@@ -77,9 +83,10 @@ def remap_clock(payload, gain, offset):
         for item in payload[field]:
             reference = old_gain * item["time_s"] + old_offset
             item["time_s"] = (reference - offset) / gain
-    for item in payload["rating"]["checks"]:
-        reference = old_gain * item["logger_s"] + old_offset
-        item["logger_s"] = (reference - offset) / gain
+    payload["rating"]["check_logger_times_s"] = [
+        (old_gain * item + old_offset - offset) / gain
+        for item in payload["rating"]["check_logger_times_s"]
+    ]
     payload["clock_checks"] = [
         {
             "logger_s": logger,
@@ -95,7 +102,7 @@ def sample():
     return {
         "station_id": "RIVER-N17",
         "control_elevation_m": 1.0,
-        "rating": {"checks": rating_checks()},
+        "rating": rating_data(),
         "clock_checks": [
             {"logger_s": 0.0, "reference_s": -5.0},
             {"logger_s": 20.0, "reference_s": 15.2},
@@ -146,35 +153,78 @@ def test_stage_offset_is_linearly_interpolated(tmp_path):
     assert result.returncode == 0 and stages == pytest.approx([1.1, 1.35, 1.6])
 
 
-def test_rating_parameters_are_recovered_from_discharge_checks(tmp_path):
-    # CASE HYDRO-03-RATING HYDRO-31-RATING
-    """题面：「参考解必须从这些检查中反算唯一的 `coefficient` 与 `exponent`，允许一条失准记录；」"""
+def solve_rating_case(tmp_path):
     result, _, output = invoke(tmp_path, sample())
     document = read(output)
     assert result.returncode == 0
+    return document
+
+
+def test_rating_parameters_are_recovered_from_discharge_checks(tmp_path):
+    # CASE HYDRO-03-RATING
+    """题面：「参考解必须联合恢复检查项到记录仪时刻的唯一双射，以及唯一的 `coefficient`、」"""
+    document = solve_rating_case(tmp_path)
     assert document["coefficient"] == pytest.approx(2.0, rel=1e-10)
     assert document["exponent"] == pytest.approx(1.5, rel=1e-10)
+    assert document["curvature_per_m"] == pytest.approx(0.8, rel=1e-9)
+    assert document["attenuation_per_m2"] == pytest.approx(-0.25, rel=1e-9)
     flows = [item["discharge_m3_s"] for item in document["readings"]]
-    expected = [2.0 * depth**1.5 for depth in [0.1, 0.35, 0.6]]
+    expected = [
+        2.0 * depth**1.5 * (1.0 + 0.8 * depth - 0.25 * depth * depth)
+        for depth in [0.1, 0.35, 0.6]
+    ]
     assert flows == pytest.approx(expected)
+
+
+def test_rating_assignment_covers_all_checks(tmp_path):
+    # CASE HYDRO-32-ASSIGNMENT
+    """题面：「每项检查恰好对应其中一个时刻，但当前顺序无关。」"""
+    document = solve_rating_case(tmp_path)
+    assigned = document["check_times_s"]
+    assert assigned.count(None) == 1
+
+
+def test_rating_assignment_times_are_unique(tmp_path):
+    # CASE HYDRO-33-UNIQUE
+    """题面：「每个非空时刻在全文恰好出现一次。」"""
+    document = solve_rating_case(tmp_path)
+    assigned = document["check_times_s"]
+    matched = [value for value in assigned if value is not None]
+    assert len(matched) == len(assigned) - 1
+    assert len(set(matched)) == len(matched)
+    assert set(matched) < set(sample()["rating"]["check_logger_times_s"])
+
+
+def test_rating_assignment_is_not_direct_array_order(tmp_path):
+    # CASE HYDRO-31-RATING
+    """题面：「直接当作 `checks` 顺序，也不能只用两组对应硬拟合三项参数。」"""
+    document = solve_rating_case(tmp_path)
+    source = sample()["rating"]
+    assert document["check_times_s"][0] != source["check_logger_times_s"][0]
 
 
 @pytest.mark.parametrize("exponent", [1.0, 3.0])
 def test_rating_exponent_endpoints_are_accepted(tmp_path, exponent):
-    """题面：「反算出的 `coefficient` 必须大于零且有限，`exponent` 必须有限并落在 1 到 3；」"""
+    """题面：「`exponent` 是有限数并落在 1 到 3。」"""
     payload = sample()
-    payload["rating"]["checks"] = rating_checks(exponent=exponent)
+    payload["rating"] = rating_data(exponent=exponent)
     result, _, output = invoke(tmp_path, payload)
     assert result.returncode == 0
     assert read(output)["exponent"] == pytest.approx(exponent, rel=1e-10)
 
 
-def test_rating_check_shape_is_strict(tmp_path):
-    """题面：「流量检查有 4 到 10 项」。"""
+def test_rating_check_count_is_strict(tmp_path):
+    # CASE HYDRO-26-RATING
+    """题面：「`checks` 恰好有 10 项。」"""
     payload = sample()
     payload["rating"]["checks"] = payload["rating"]["checks"][:3]
     result, _, output = invoke(tmp_path, payload)
     assert result.returncode == 1 and result.stderr == "运行拒收: BAD_INPUT\n" and not output.exists()
+
+
+def test_rating_check_shape_is_strict(tmp_path):
+    # CASE HYDRO-34-SHAPE
+    """题面：「每项恰好包含 `raw_m`、`discharge_m3_s` 两个有限数，且实测流量大于零。」"""
     payload = sample()
     payload["rating"]["checks"][0]["quality"] = "estimated"
     result, _, output = invoke(tmp_path, payload)
@@ -182,9 +232,9 @@ def test_rating_check_shape_is_strict(tmp_path):
 
 
 def test_rating_checks_must_stay_inside_the_anchor_window(tmp_path):
-    """题面：「换算到参考时间后，每项检查必须落在首末锚点之间」。"""
+    """题面：「换算到参考时间后，匹配项必须落在首末锚点之间，」"""
     payload = sample()
-    payload["rating"]["checks"][0]["logger_s"] = 1000.0
+    payload["rating"]["check_logger_times_s"][0] = 1000.0
     result, _, output = invoke(tmp_path, payload)
     assert result.returncode == 1 and result.stderr == "运行拒收: BAD_INPUT\n" and not output.exists()
 
@@ -192,16 +242,38 @@ def test_rating_checks_must_stay_inside_the_anchor_window(tmp_path):
 def test_rating_checks_require_positive_corrected_depth(tmp_path):
     """题面：「校正水位高于控制高程」。"""
     payload = sample()
-    payload["rating"]["checks"][0]["raw_m"] = 0.8
+    for item in payload["rating"]["checks"]:
+        item["raw_m"] = 0.8
     result, _, output = invoke(tmp_path, payload)
     assert result.returncode == 1 and result.stderr == "运行拒收: BAD_INPUT\n" and not output.exists()
 
 
 def test_rating_checks_need_a_unique_consensus_curve(tmp_path):
-    """题面：「只有支持记录最多的那一组可以胜出」。"""
+    """题面：「只有支持检查最多的那一组可以胜出。」"""
     payload = sample()
     for item in payload["rating"]["checks"]:
         item["discharge_m3_s"] = 1.0
+    result, _, output = invoke(tmp_path, payload)
+    assert result.returncode == 1 and result.stderr == "运行拒收: BAD_INPUT\n" and not output.exists()
+
+
+def test_four_bad_checks_are_identified_by_global_consensus(tmp_path):
+    """题面：「至多四项检查可能失准」。"""
+    payload = sample()
+    for index in (0, 1, 2):
+        payload["rating"]["checks"][index]["discharge_m3_s"] *= 1.75
+    result, _, output = invoke(tmp_path, payload)
+    document = read(output)
+    assert result.returncode == 0
+    assert document["coefficient"] == pytest.approx(2.0, rel=1e-9)
+    assert document["check_times_s"].count(None) == 4
+
+
+def test_five_bad_checks_exceed_the_consensus_budget(tmp_path):
+    """题面：「至多四项检查可能失准」。"""
+    payload = sample()
+    for index in (0, 1, 2, 3):
+        payload["rating"]["checks"][index]["discharge_m3_s"] *= 1.75
     result, _, output = invoke(tmp_path, payload)
     assert result.returncode == 1 and result.stderr == "运行拒收: BAD_INPUT\n" and not output.exists()
 
@@ -233,9 +305,28 @@ def test_top_level_keys_are_exact(tmp_path):
 
 
 def test_rating_keys_are_exact(tmp_path):
+    # CASE HYDRO-07-RATING
     """题面：「`rating` 恰好包含 `checks`。」"""
     payload = sample()
     payload["rating"]["offset"] = 0.0
+    result, _, output = invoke(tmp_path, payload)
+    assert result.returncode == 1 and result.stderr == "运行拒收: BAD_INPUT\n" and not output.exists()
+
+
+def test_rating_time_pool_key_is_exact(tmp_path):
+    # CASE HYDRO-35-TIMES
+    """题面：「`rating` 还恰好包含 `check_logger_times_s`。」"""
+    payload = sample()
+    del payload["rating"]["check_logger_times_s"]
+    result, _, output = invoke(tmp_path, payload)
+    assert result.returncode == 1 and result.stderr == "运行拒收: BAD_INPUT\n" and not output.exists()
+
+
+def test_rating_exponent_key_is_exact(tmp_path):
+    # CASE HYDRO-36-EXPONENT
+    """题面：「`rating` 还恰好包含 `exponent`。」"""
+    payload = sample()
+    del payload["rating"]["exponent"]
     result, _, output = invoke(tmp_path, payload)
     assert result.returncode == 1 and result.stderr == "运行拒收: BAD_INPUT\n" and not output.exists()
 
@@ -291,18 +382,18 @@ def test_readings_outside_anchor_span_are_refused(tmp_path):
 
 
 def test_exponent_range_is_enforced(tmp_path):
-    """题面：「反算出的 `coefficient` 必须大于零且有限，`exponent` 必须有限并落在 1 到 3；」"""
+    """题面：「`exponent` 是有限数并落在 1 到 3。」"""
     for exponent in (0.5, 3.5):
         payload = sample()
-        payload["rating"]["checks"] = rating_checks(exponent=exponent)
+        payload["rating"] = rating_data(exponent=exponent)
         result, _, output = invoke(tmp_path, payload)
         assert result.returncode == 1 and result.stderr == "运行拒收: BAD_INPUT\n" and not output.exists()
 
 
 def test_nonpositive_coefficient_is_refused(tmp_path):
-    """题面：「反算出的 `coefficient` 必须大于零且有限，`exponent` 必须有限并落在 1 到 3；」"""
+    """题面：「`coefficient` 大于零，`curvature_per_m` 与 `attenuation_per_m2` 的绝对值都不超过 5，」"""
     payload = sample()
-    payload["rating"]["checks"] = rating_checks(coefficient=-2.0)
+    payload["rating"] = rating_data(coefficient=-2.0)
     result, _, output = invoke(tmp_path, payload)
     assert result.returncode == 1 and result.stderr == "运行拒收: BAD_INPUT\n" and not output.exists()
 
@@ -320,6 +411,9 @@ def test_result_has_fixed_compact_shape(tmp_path):
         "clock_offset_s",
         "coefficient",
         "exponent",
+        "curvature_per_m",
+        "attenuation_per_m2",
+        "check_times_s",
         "readings",
         "total_volume_m3",
         "peak_discharge_m3_s",
@@ -335,15 +429,27 @@ def test_anchor_has_exact_keys(tmp_path):
     assert result.returncode == 1 and result.stderr == "运行拒收: BAD_INPUT\n" and not output.exists()
 
 
-def test_clock_mapping_is_recovered_and_one_bad_check_ignored(tmp_path):
-    # CASE HYDRO-23-CLOCK HYDRO-30-CLOCK
-    """题面：「`clock_checks` 有 4 至 8 条对时记录，每项恰好有 `logger_s` 与 `reference_s` 两个有限数。最多一条对时记录可能失准；其余记录都满足 `reference_s = clock_gain * logger_s + clock_offset_s`，其中 `clock_gain` 位于 `0.99` 到 `1.01`。仿射参数中只有支持记录最多的那一组可以胜出。」"""
+def solve_clock_case(tmp_path):
     result, _, output = invoke(tmp_path, sample())
     document = read(output)
     assert result.returncode == 0
+    return document
+
+
+def test_clock_mapping_is_recovered_and_one_bad_check_ignored(tmp_path):
+    # CASE HYDRO-23-CLOCK
+    """题面：「最多一条对时记录可能失准；其余记录都满足 `reference_s = clock_gain * logger_s + clock_offset_s`，其中 `clock_gain` 位于 `0.99` 到 `1.01`。」"""
+    document = solve_clock_case(tmp_path)
     assert document["clock_gain"] == pytest.approx(1.01, abs=1e-12)
     assert document["clock_offset_s"] == pytest.approx(-5.0, abs=1e-9)
+
+
+def test_clock_mapping_is_shared_with_rating_time_pool(tmp_path):
+    # CASE HYDRO-30-CLOCK
+    """题面：「`rating` 还恰好包含 `check_logger_times_s`。」"""
+    document = solve_clock_case(tmp_path)
     assert [item["time_s"] for item in document["readings"]] == pytest.approx([-5.0, 45.5, 96.0])
+    assert len(document["check_times_s"]) == len(sample()["rating"]["checks"])
 
 
 def test_clock_gain_lower_endpoint_is_accepted(tmp_path):
